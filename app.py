@@ -1,5 +1,5 @@
 """
-Private Credit Quarter-End Valuation App (ASC 820, yield method) — DUMMY DATA.
+Private Credit Quarter-End Valuation App -.
 Run:  streamlit run app.py
 """
 import datetime as dt
@@ -10,12 +10,12 @@ import streamlit as st
 
 import valuation as v
 
-st.set_page_config(page_title="PC Fund Valuation — Q-End Model", layout="wide", page_icon="📊")
+st.set_page_config(page_title="PC Fund Valuation — Q-End Model- by Suraj Shah", layout="wide", page_icon="📊")
 
-st.title("Private Credit Fund — Quarter-End Valuation (ASC 820)")
+st.title("Private Credit Fund — Quarter-End Valuation")
 st.caption("Yield-method DCF with recovery overlay for watchlist credits. "
-           "**All data are dummy figures for illustration only.** "
-           "Driven by the three linked workbooks in `/data`.")
+           "**In testing not real data - for illustration only.** "
+           )
 
 # ------------------------------------------------------------------- controls
 md_all = v.load_market_data()
