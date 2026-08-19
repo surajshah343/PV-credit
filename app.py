@@ -1,8 +1,10 @@
 """
-Private Credit Quarter-End Valuation App -.
+Private Credit Quarter-End Valuation App (ASC 820, yield method) — DUMMY DATA.
+Users upload the three workbooks; bundled files in /data are used as a fallback if present.
 Run:  streamlit run app.py
 """
 import datetime as dt
+from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -10,24 +12,82 @@ import streamlit as st
 
 import valuation as v
 
-st.set_page_config(page_title="PC Fund Valuation — Q-End Model- by Suraj Shah", layout="wide", page_icon="📊")
+st.set_page_config(page_title="PC Fund Valuation — Q-End Model", layout="wide", page_icon="📊")
 
-st.title("Private Credit Fund — Quarter-End Valuation- by Suraj Shah")
+st.title("Private Credit Fund — Quarter-End Valuation (ASC 820)")
 st.caption("Yield-method DCF with recovery overlay for watchlist credits. "
-           "**In testing not real data - for illustration only.** "
-           )
+           "**All data are dummy figures for illustration only.**")
 
-# ------------------------------------------------------------------- controls
-md_all = v.load_market_data()
+DATA_DIR = Path(__file__).parent / "data"
+
+
+# ------------------------------------------------------------------- file intake
+@st.cache_data(show_spinner=False)
+def parse_market(b: bytes) -> dict:
+    return v.load_market_data(b)
+
+
+@st.cache_data(show_spinner=False)
+def parse_model(b: bytes) -> dict:
+    return v.load_model(b)
+
+
+def _source(uploaded, fallback_name: str):
+    """Uploaded file bytes, else bundled repo file if it exists, else None."""
+    if uploaded is not None:
+        return uploaded.getvalue(), f"uploaded · {uploaded.name}"
+    p = DATA_DIR / fallback_name
+    if p.exists():
+        return p.read_bytes(), f"bundled · data/{fallback_name}"
+    return None, None
+
 
 with st.sidebar:
-    st.header("Valuation Controls")
-    quarter = st.radio("Portfolio quarter", ["Q2", "Q1"], horizontal=True,
-                       format_func=lambda q: f"{q} 2026")
-    default_vd = v.QUARTER_END[quarter]
+    st.header("1 · Upload workbooks")
+    up_md = st.file_uploader("Market_Data_Inputs.xlsx", type="xlsx", key="md")
+    up_q1 = st.file_uploader("PC_Valuation_Q1_2026.xlsx", type="xlsx", key="q1")
+    up_q2 = st.file_uploader("PC_Valuation_Q2_2026.xlsx", type="xlsx", key="q2")
+
+md_bytes, md_src = _source(up_md, "Market_Data_Inputs.xlsx")
+q1_bytes, q1_src = _source(up_q1, "PC_Valuation_Q1_2026.xlsx")
+q2_bytes, q2_src = _source(up_q2, "PC_Valuation_Q2_2026.xlsx")
+
+if md_bytes is None or (q1_bytes is None and q2_bytes is None):
+    st.info("⬅️ **Upload the workbooks in the sidebar to begin.**\n\n"
+            "Required: `Market_Data_Inputs.xlsx` plus at least one quarterly model "
+            "(`PC_Valuation_Q1_2026.xlsx` / `PC_Valuation_Q2_2026.xlsx`). "
+            "Upload both quarterly models to unlock the Q-over-Q bridge.")
+    st.stop()
+
+try:
+    md_all = parse_market(md_bytes)
+    models = {}
+    if q1_bytes:
+        models["Q1"] = parse_model(q1_bytes)
+    if q2_bytes:
+        models["Q2"] = parse_model(q2_bytes)
+except ValueError as e:
+    st.error(f"Couldn't read a workbook: {e}")
+    st.stop()
+except Exception as e:  # corrupt zip, wrong file type renamed to .xlsx, etc.
+    st.error(f"Couldn't open a workbook — is it a valid .xlsx file? Details: {e}")
+    st.stop()
+
+with st.sidebar:
+    st.caption(f"Market data: {md_src}")
+    if "Q1" in models: st.caption(f"Q1 model: {q1_src}")
+    if "Q2" in models: st.caption(f"Q2 model: {q2_src}")
+
+    st.header("2 · Valuation controls")
+    quarters = list(models.keys())
+    quarter = st.radio("Portfolio quarter", quarters, horizontal=True,
+                       index=len(quarters) - 1, format_func=lambda q: f"{q} 2026")
+    model = models[quarter]
+    default_vd = model["valdate"] or v.QUARTER_END[quarter]
     valdate = st.date_input("Valuation date", value=default_vd,
                             min_value=dt.date(2026, 1, 1), max_value=dt.date(2027, 12, 31),
-                            help="Drives the quarterly cash-flow projection horizon per position.")
+                            help="Drives the quarterly cash-flow projection horizon per position. "
+                                 "Default comes from the model's Summary tab.")
     vintage = st.selectbox("Market data vintage", ["Match portfolio quarter", "Q1 2026", "Q2 2026"],
                            help="Which quarter-end spot SOFR, forward curve and spread matrix to pull "
                                 "from Market_Data_Inputs.xlsx.")
@@ -43,11 +103,12 @@ with st.sidebar:
 
 settings = dict(pik_capitalize=pik_on, spread_shock_bps=float(shock), include_illiquidity=incl_illiq)
 
-cur = v.value_portfolio(quarter, md_all, valdate=valdate, vintage=vintage_key, **settings)
-prior_q = "Q1" if quarter == "Q2" else None
-prior = v.value_portfolio(prior_q, md_all, **settings) if prior_q else None  # prior at its own q-end/vintage
-
 md = md_all[vintage_key]
+cur = v.value_portfolio(model, md, valdate=valdate, **settings)
+prior = None
+if quarter == "Q2" and "Q1" in models:
+    m1 = models["Q1"]
+    prior = v.value_portfolio(m1, md_all["Q1"], valdate=m1["valdate"] or v.QUARTER_END["Q1"], **settings)
 
 # -------------------------------------------------------------------- metrics
 c1, c2, c3, c4, c5 = st.columns(5)
@@ -87,31 +148,35 @@ with tab_sum:
 
 # --------------------------------------------------------------------- bridge
 with tab_bridge:
-    if prior is None:
-        st.info("Select **Q2 2026** in the sidebar to see the Q1 → Q2 bridge. "
+    if quarter != "Q2":
+        st.info("Select **Q2 2026** to see the Q1 → Q2 bridge. "
                 "(The Q1 workbook bridges against dummy 12/31/2025 marks — see its Bridge tab.)")
     else:
-        br = v.qoq_bridge(prior, cur, quarter)
+        br = v.qoq_bridge(prior, cur, model["prior_marks"])
         drivers = ["Repayments", "PIK Capitalized", "New Originations",
                    "Credit-Specific", "Market Re-mark & Accretion"]
-        totals = {d: br[d].sum() for d in drivers}
+        totals = {dr: br[dr].sum() for dr in drivers}
         start, end = br["Prior FV"].sum(), br["Current FV"].sum()
+        src_note = ("prior FVs recomputed from the uploaded Q1 model with the same toggles"
+                    if prior is not None else
+                    "prior FVs taken from the Q2 workbook's Bridge tab (upload the Q1 model for "
+                    "toggle-consistent attribution)")
         st.subheader("Q1 2026 → Q2 2026 fair value bridge ($000)")
         fig = go.Figure(go.Waterfall(
             orientation="v",
             measure=["absolute"] + ["relative"] * len(drivers) + ["total"],
             x=["Q1 2026 FV"] + drivers + ["Q2 2026 FV"],
-            y=[start] + [totals[d] for d in drivers] + [end],
-            text=[f"{val:,.0f}" for val in [start] + [totals[d] for d in drivers] + [end]],
+            y=[start] + [totals[dr] for dr in drivers] + [end],
+            text=[f"{val:,.0f}" for val in [start] + [totals[dr] for dr in drivers] + [end]],
             textposition="outside",
             connector={"line": {"color": "grey"}},
         ))
         fig.update_layout(height=460, margin=dict(l=10, r=10, t=30, b=10),
                           yaxis_title="Fair value ($000)")
         st.plotly_chart(fig, width="stretch")
-        st.caption("Prior FV recomputed with the same toggles for apples-to-apples attribution; "
-                   "credit-specific captures watchlist / rating-migration names, market re-mark & "
-                   "accretion is the residual for performing names — mirroring the Excel Bridge tab.")
+        st.caption(f"Credit-specific captures watchlist / rating-migration names; market re-mark & "
+                   f"accretion is the residual for performing names — mirroring the Excel Bridge tab. "
+                   f"({src_note}.)")
         with st.expander("Position-level bridge detail"):
             st.dataframe(br.style.format({c: "{:,.1f}" for c in br.columns if c != "Borrower"}),
                          width="stretch", hide_index=True)
@@ -119,13 +184,12 @@ with tab_bridge:
 # ------------------------------------------------------------------ positions
 with tab_pos:
     st.subheader(f"Position-level valuation — {quarter} 2026 (valuation date {valdate:%m/%d/%Y})")
-    show = cur.copy()
     fmt = {"Commitment": "{:,.0f}", "Funded": "{:,.1f}", "DCF FV": "{:,.1f}", "Recovery FV": "{:,.1f}",
            "Fair Value": "{:,.1f}", "FV % of Funded": "{:.2%}", "Market Yield": "{:.2%}",
            "Base": "{:.2%}", "Floor": "{:.2%}", "Recovery Weight": "{:.0%}",
            "Cash Spread (bps)": "{:,.0f}", "PIK (bps)": "{:,.0f}", "Credit Spread (bps)": "{:,.0f}",
            "Illiquidity (bps)": "{:,.0f}", "Credit Adj (bps)": "{:,.0f}"}
-    st.dataframe(show.style.format(fmt), width="stretch", hide_index=True, height=430)
+    st.dataframe(cur.style.format(fmt), width="stretch", hide_index=True, height=430)
     st.caption("Market yield = quarter-end spot SOFR + credit spread (rating × seniority matrix) "
                "+ illiquidity premium (tranche) + credit-specific adjustment + any user shock.")
 
@@ -133,7 +197,7 @@ with tab_pos:
 with tab_drill:
     name = st.selectbox("Position", cur["Borrower"].tolist())
     row = cur[cur["Borrower"] == name].iloc[0]
-    p = next(x for x in v.load_positions(quarter) if x.name == name)
+    p = next(x for x in model["positions"] if x.name == name)
     yb = v.market_yield(p, md, float(shock), incl_illiq)
     cfs = v.project_cashflows(p, valdate, md, yb["yield"], pik_on)
 
@@ -151,7 +215,7 @@ with tab_drill:
     st.dataframe(yb_df, hide_index=True)
 
     if row["Recovery Weight"] > 0:
-        rp = v.load_recovery_params(quarter)
+        rp = model["recovery"]
         st.warning(f"Watchlist credit — fair value blends {1 - row['Recovery Weight']:.0%} yield-method DCF "
                    f"with {row['Recovery Weight']:.0%} recovery value "
                    f"(EV waterfall: {rp['ebitda']:,.0f} EBITDA × {rp['multiple']:.2f}x, "
