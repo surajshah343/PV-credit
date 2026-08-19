@@ -14,7 +14,7 @@ import valuation as v
 
 st.set_page_config(page_title="PC Fund Valuation — Q-End Model", layout="wide", page_icon="📊")
 
-st.title("Private Credit Fund — Quarter-End Valuation - by Suraj Shah")
+st.title("PC Fund Valuation - by Suraj Shah")
 st.caption("Yield-method DCF with recovery overlay for watchlist credits. "
            "**IN TESTING MODE- All data are for illustration only.**")
 
